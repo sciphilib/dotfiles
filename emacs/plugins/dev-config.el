@@ -1,0 +1,120 @@
+;;; dev-config.el --- Development, manually started servers -*- lexical-binding: t; -*-
+(require 'cl-lib)
+(require 'project)
+(require 'compile)
+(require 'ansi-color)
+(require 'eglot)
+(require 'python)
+(require 'cc-guess)
+;; Read .editorconfig as well as Emacs file/directory-local variables.
+(require 'editorconfig)
+(editorconfig-mode 1)
+
+(defun my-c-detect-indentation ()
+  "Infer C/C++ indentation without changing text.
+Runs before file/directory locals and EditorConfig, which can override the guess.
+For hard-tab files without explicit metadata, use the conventional tab width 8."
+  (when (and (derived-mode-p 'c-mode 'c++-mode)
+             buffer-file-name (> (buffer-size) 0))
+    (save-excursion
+      (save-restriction
+        (widen)
+        (let ((limit (min (point-max) (+ (point-min) 50000)))
+              (tabs 0) (spaces 0))
+          (goto-char (point-min))
+          (while (re-search-forward "^\\([ \t]+\\)\\S-" limit t)
+            (if (string-match-p "\t" (match-string-no-properties 1))
+                (cl-incf tabs)
+              (cl-incf spaces)))
+          (when (> (+ tabs spaces) 0)
+            (setq-local indent-tabs-mode (> tabs spaces))
+            (when indent-tabs-mode (setq-local tab-width 8))
+            (c-guess)))))))
+(defun my-c-indent-tab ()
+  "Use TAB for indentation, not implicit completion at the start of a word."
+  (when (derived-mode-p 'c-mode 'c++-mode)
+    (setq-local tab-always-indent t)))
+(add-hook 'c-mode-common-hook #'my-c-indent-tab)
+(add-hook 'c-mode-common-hook #'my-c-detect-indentation)
+(setq eglot-autoreconnect nil eglot-sync-connect nil eglot-connect-timeout 10
+      compilation-scroll-output 'first-error)
+(add-hook 'compilation-filter-hook #'ansi-color-compilation-filter)
+(defclass my-eglot-basedpyright (eglot-lsp-server) ()
+  :documentation "Basedpyright without dynamic filesystem watchers.")
+(cl-defmethod eglot-client-capabilities :around ((_server my-eglot-basedpyright))
+  (let* ((caps (cl-call-next-method))
+         (workspace (plist-get caps :workspace))
+         (watched (plist-get workspace :didChangeWatchedFiles)))
+    (setq watched (plist-put watched :dynamicRegistration :json-false)
+          workspace (plist-put workspace :didChangeWatchedFiles watched)
+          caps (plist-put caps :workspace workspace))
+    caps))
+(add-to-list 'eglot-server-programs
+             '((c-mode c++-mode c-ts-mode c++-ts-mode) . ("clangd")))
+(add-to-list 'eglot-server-programs
+             '((python-mode python-ts-mode) . (my-eglot-basedpyright "basedpyright-langserver" "--stdio")))
+(defun my-dev-eglot-ensure ()
+  "Start Eglot manually for this project."
+  (interactive)
+  (eglot-ensure))
+(defun my-project-root ()
+  "Return project root, or the current directory."
+  (if-let* ((project (project-current nil))) (project-root project) default-directory))
+(defun my-project-compile ()
+  "Run a prompted compile command at the project root."
+  (interactive)
+  (let ((default-directory (my-project-root)))
+    (call-interactively #'compile)))
+(defun my-format-buffer ()
+  "Format C/C++ or Python; do not change the buffer if formatting fails."
+  (interactive)
+  (let* ((python (derived-mode-p 'python-mode 'python-ts-mode))
+         (cpp (derived-mode-p 'c-mode 'c++-mode 'c-ts-mode 'c++-ts-mode))
+         (program (cond (python "ruff") (cpp "clang-format")
+                        (t (user-error "Formatting is only configured for C/C++ and Python"))))
+         (args (if python
+                   (list "format" "--stdin-filename" (or buffer-file-name "buffer.py") "-")
+                 (list (concat "--assume-filename=" (or buffer-file-name "buffer.cpp")))))
+         (output (generate-new-buffer " *format-output*"))
+         (errors (make-temp-file "emacs-format-"))
+         (source (current-buffer)))
+    (unless (executable-find program) (user-error "%s is not on PATH" program))
+    (unwind-protect
+        (let ((status (apply #'call-process-region (point-min) (point-max)
+                             program nil (list output errors) nil args)))
+          (unless (and (integerp status) (zerop status))
+            (user-error "%s failed: %s" program
+                        (with-temp-buffer (insert-file-contents errors) (buffer-string))))
+          (with-current-buffer source
+            (atomic-change-group (replace-buffer-contents output))))
+      (kill-buffer output)
+      (delete-file errors))))
+(defun my-python-use-venv (directory)
+  "Set DIRECTORY as virtualenv only in this buffer; restart REPL/Eglot yourself."
+  (interactive "DVirtualenv directory: ")
+  (let* ((venv (directory-file-name (expand-file-name directory)))
+         (bin (expand-file-name "bin" venv))
+         (python (expand-file-name "python" bin)))
+    (unless (file-executable-p python) (user-error "No executable %s" python))
+    (setq-local exec-path (cons bin (remove bin exec-path)))
+    (setq-local process-environment (copy-sequence process-environment))
+    (setenv "VIRTUAL_ENV" venv)
+    (setenv "PATH" (concat bin path-separator (getenv "PATH")))
+    (setq-local python-shell-interpreter python)
+    (setq-local eglot-workspace-configuration
+                (list :python (list :pythonPath python)))))
+(defun my-python-auto-venv ()
+  "Use the project's .venv when present."
+  (let ((venv (expand-file-name ".venv" (my-project-root))))
+    (when (file-executable-p (expand-file-name "bin/python" venv))
+      (my-python-use-venv venv))))
+(add-hook 'python-mode-hook #'my-python-auto-venv)
+(add-hook 'python-ts-mode-hook #'my-python-auto-venv)
+(defvar my-project-map project-prefix-map)
+(global-set-key (kbd "C-c p") my-project-map)
+(dolist (binding '(("C-c c" . my-project-compile) ("C-c r" . recompile)
+                   ("C-c f" . my-format-buffer) ("C-c v" . my-python-use-venv)
+                   ("C-c e s" . my-dev-eglot-ensure) ("C-c e r" . eglot-rename)
+                   ("C-c e a" . eglot-code-actions)))
+  (global-set-key (kbd (car binding)) (cdr binding)))
+(provide 'dev-config)

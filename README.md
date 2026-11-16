@@ -6,9 +6,9 @@
 ln -sfn "$PWD/kitty" ~/.config/kitty
 ```
 
-- `kitty/kitty.conf` — основная конфигурация
-- `kitty/rexim.conf` — активная цветовая тема
-- `kitty/gruber-darker.conf` — альтернативная тема
+- `kitty/kitty.conf` — main config
+- `kitty/rexim.conf` — active color theme
+- `kitty/gruber-darker.conf` — alternative theme
 
 ## zsh
 
@@ -16,4 +16,8 @@ ln -sfn "$PWD/kitty" ~/.config/kitty
 ln -sf "$PWD/zsh/zshrc" ~/.zshrc
 ```
 
-Требует oh-my-zsh в `~/.config/.oh-my-zsh`; для подсветки вывода — `brew install grc`.
+Requires oh-my-zsh in `~/.config/.oh-my-zsh`; `brew install grc` for colored command output.
+
+## emacs
+
+See [`emacs/README.md`](emacs/README.md).

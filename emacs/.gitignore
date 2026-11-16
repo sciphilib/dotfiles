@@ -1,0 +1,8 @@
+# Runtime state / generated files (if this dir is used as user-emacs-directory)
+elpa/
+eln-cache/
+var/
+logs/
+history
+projects.eld
+custom.el
